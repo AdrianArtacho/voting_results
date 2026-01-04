@@ -10,7 +10,7 @@
     :root { color-scheme: dark; }
     html, body { height: 100%; margin: 0; background:#000; color:#fff; font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
     .wrap { position: fixed; inset: 0; display: flex; flex-direction: column; padding: 20px; box-sizing: border-box; gap: 14px; }
-    .top { display:flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+    .top { display:flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
     .title { font-size: 22px; font-weight: 650; letter-spacing: 0.2px; }
     .meta { opacity: .75; font-size: 13px; white-space: nowrap; }
     .board { flex: 1; display:flex; flex-direction: column; justify-content: center; gap: 14px; }
@@ -37,7 +37,7 @@
       width: 0%;
       background: rgba(255,255,255,0.85);
       border-radius: 999px;
-      transition: width 600ms ease; /* smooth change */
+      transition: width 600ms ease;
     }
     .barText {
       position: absolute; inset: 0;
@@ -50,7 +50,7 @@
 
     .footer {
       display:flex; justify-content: space-between; align-items: center;
-      opacity: .7; font-size: 12px; gap: 10px;
+      opacity: .7; font-size: 12px; gap: 10px; flex-wrap: wrap;
     }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
     .hidden { display:none !important; }
@@ -61,14 +61,17 @@
   <div class="wrap">
     <div class="top">
       <div class="title" id="title">Votes</div>
-      <div class="meta"><span id="total">0</span> votes · <span id="updated">--:--:--</span></div>
+      <div class="meta">
+        <span id="total">0</span> votes · <span id="updated">--:--:--</span>
+        <span id="windowInfo"></span>
+      </div>
     </div>
 
     <div class="board" id="board"></div>
 
     <div class="footer">
       <div id="status">Loading…</div>
-      <div class="mono" id="csvHint"></div>
+      <div class="mono" id="hint"></div>
     </div>
   </div>
 
@@ -78,24 +81,66 @@
   const elTotal = document.getElementById("total");
   const elUpdated = document.getElementById("updated");
   const elStatus = document.getElementById("status");
-  const elCsvHint = document.getElementById("csvHint");
+  const elHint = document.getElementById("hint");
   const elTitle = document.getElementById("title");
+  const elWindowInfo = document.getElementById("windowInfo");
 
   const q = new URLSearchParams(location.search);
   const CSV_URL = q.get("csv") || "";
-  const COL = Math.max(1, parseInt(q.get("col") || "1", 10)); // 1-based
+  const COL = Math.max(1, parseInt(q.get("col") || "1", 10));       // option column (1-based)
+  const TSCOL = Math.max(1, parseInt(q.get("tscol") || "2", 10));   // timestamp column (1-based)
   const REFRESH_S = Math.max(0.5, parseFloat(q.get("refresh") || "2"));
   const TITLE = q.get("title") || "Votes";
   elTitle.textContent = TITLE;
+
+  // Closing window params:
+  // open=now | open=<ISO>
+  // close=<ISO>
+  // window=<seconds>  (auto close = open + window)
+  const OPEN_RAW = (q.get("open") || "").trim();
+  const CLOSE_RAW = (q.get("close") || "").trim();
+  const WINDOW_S = q.get("window") ? Math.max(1, parseFloat(q.get("window"))) : null;
 
   function nowHMS() {
     const d = new Date();
     return d.toLocaleTimeString([], {hour:"2-digit", minute:"2-digit", second:"2-digit"});
   }
-
   function sleep(ms){ return new Promise(r => setTimeout(r, ms)); }
 
-  // minimal CSV parser (handles quotes)
+  // Freeze "open=now" at first load, so the window is stable.
+  const OPEN_FIXED_MS = (() => {
+    if (!OPEN_RAW) return null;
+    if (OPEN_RAW.toLowerCase() === "now") return Date.now();
+    const ms = Date.parse(OPEN_RAW);
+    return Number.isFinite(ms) ? ms : null;
+  })();
+
+  const CLOSE_FIXED_MS = (() => {
+    if (CLOSE_RAW) {
+      const ms = Date.parse(CLOSE_RAW);
+      return Number.isFinite(ms) ? ms : null;
+    }
+    if (OPEN_FIXED_MS !== null && WINDOW_S !== null) {
+      return OPEN_FIXED_MS + WINDOW_S * 1000;
+    }
+    return null;
+  })();
+
+  function inWindow(tsMs) {
+    if (!Number.isFinite(tsMs)) return false;
+    if (OPEN_FIXED_MS !== null && tsMs < OPEN_FIXED_MS) return false;
+    if (CLOSE_FIXED_MS !== null && tsMs > CLOSE_FIXED_MS) return false;
+    return true;
+  }
+
+  function windowLabel() {
+    if (OPEN_FIXED_MS === null && CLOSE_FIXED_MS === null) return "";
+    const o = OPEN_FIXED_MS !== null ? new Date(OPEN_FIXED_MS).toLocaleTimeString() : "—";
+    const c = CLOSE_FIXED_MS !== null ? new Date(CLOSE_FIXED_MS).toLocaleTimeString() : "—";
+    return ` · window ${o}–${c}`;
+  }
+
+  // CSV parser (quotes)
   function parseCSV(text) {
     const rows = [];
     let row = [];
@@ -113,13 +158,9 @@
         if (c === "\r" && n === "\n") i++;
         row.push(cell.trim());
         cell = "";
-        if (c !== ",") {
-          rows.push(row);
-          row = [];
-        }
+        if (c !== ",") { rows.push(row); row = []; }
         continue;
       }
-
       cell += c;
     }
     row.push(cell.trim());
@@ -138,8 +179,8 @@
     return await res.text();
   }
 
-  // Keep DOM nodes for smooth animation (update widths rather than re-create)
-  const rowsByKey = new Map(); // option -> {root, fill, pct, label, countText}
+  // DOM rows cache
+  const rowsByKey = new Map();
   let lastOrder = [];
 
   function ensureRow(option) {
@@ -175,39 +216,35 @@
 
     elBoard.appendChild(root);
 
-    const obj = { root, label, track, fill, barText, pct };
+    const obj = { root, label, fill, barText, pct };
     rowsByKey.set(option, obj);
     return obj;
   }
 
-  function renderCounts(counts) {
-    const entries = Array.from(counts.entries());
-    entries.sort((a,b) => b[1] - a[1] || String(a[0]).localeCompare(String(b[0])));
+  function renderCounts(counts, totalIncluded, totalAll) {
+    const entries = Array.from(counts.entries())
+      .sort((a,b) => b[1]-a[1] || String(a[0]).localeCompare(String(b[0])));
 
-    const total = entries.reduce((s, [,c]) => s + c, 0);
-    elTotal.textContent = String(total);
+    elTotal.textContent = String(totalIncluded);
     elUpdated.textContent = nowHMS();
+    elWindowInfo.textContent = windowLabel();
 
-    // Ensure rows exist + update values
+    // Update
     for (const [opt, c] of entries) {
       const r = ensureRow(opt);
-      const pct = total > 0 ? (100 * c / total) : 0;
+      const pct = totalIncluded > 0 ? (100 * c / totalIncluded) : 0;
       r.pct.textContent = `${pct.toFixed(pct < 10 ? 1 : 0)}%`;
       r.fill.style.width = `${pct}%`;
       r.barText.textContent = `${c}`;
     }
 
-    // Hide rows that disappeared
+    // Hide missing
     const currentKeys = new Set(entries.map(([k]) => k));
     for (const [k, r] of rowsByKey.entries()) {
-      if (!currentKeys.has(k)) {
-        r.root.classList.add("hidden");
-      } else {
-        r.root.classList.remove("hidden");
-      }
+      r.root.classList.toggle("hidden", !currentKeys.has(k));
     }
 
-    // Reorder DOM only if order changed (keeps animations stable)
+    // Reorder only if changed
     const newOrder = entries.map(([k]) => k);
     const changed = newOrder.length !== lastOrder.length || newOrder.some((k,i) => k !== lastOrder[i]);
     if (changed) {
@@ -217,22 +254,44 @@
       elBoard.appendChild(frag);
       lastOrder = newOrder;
     }
+
+    // Status text
+    if (OPEN_FIXED_MS !== null || CLOSE_FIXED_MS !== null) {
+      elStatus.textContent = `Counting ${totalIncluded}/${totalAll} votes in window`;
+    } else {
+      elStatus.textContent = "Live";
+    }
   }
 
   function aggregate(rows) {
-    // Uses column COL (1-based) for option labels.
-    // Assumes there may be a header row; we’ll skip it if it looks like one.
-    const colIdx = COL - 1;
-    const values = rows.map(r => (r[colIdx] || "").trim()).filter(Boolean);
+    const optIdx = COL - 1;
+    const tsIdx = TSCOL - 1;
 
-    // If the first value looks like a header label, drop it.
-    // (You can remove this if your published CSV has no headers.)
-    const headerish = values[0] && /option|vote|label/i.test(values[0]);
-    const vals = headerish ? values.slice(1) : values;
+    // Optional header skip if first row looks like labels
+    const looksHeader = rows.length && /option|vote|label/i.test((rows[0][optIdx] || "")) && /ts|time|iso/i.test((rows[0][tsIdx] || ""));
+    const dataRows = looksHeader ? rows.slice(1) : rows;
 
-    const m = new Map();
-    for (const v of vals) m.set(v, (m.get(v) || 0) + 1);
-    return m;
+    const counts = new Map();
+    let totalAll = 0;
+    let totalIncluded = 0;
+
+    for (const r of dataRows) {
+      const opt = (r[optIdx] || "").trim();
+      const ts = (r[tsIdx] || "").trim();
+      if (!opt || !ts) continue;
+
+      totalAll++;
+
+      const tsMs = Date.parse(ts);
+      if (!Number.isFinite(tsMs)) continue;
+
+      if (!inWindow(tsMs)) continue;
+
+      totalIncluded++;
+      counts.set(opt, (counts.get(opt) || 0) + 1);
+    }
+
+    return { counts, totalIncluded, totalAll };
   }
 
   async function loop() {
@@ -240,16 +299,19 @@
       elStatus.textContent = "Missing ?csv=… parameter";
       return;
     }
-    elCsvHint.textContent = "csv: " + CSV_URL;
+
+    elHint.textContent =
+      `col=${COL} tscol=${TSCOL} refresh=${REFRESH_S}s` +
+      (OPEN_RAW ? ` open=${OPEN_RAW}` : "") +
+      (CLOSE_RAW ? ` close=${CLOSE_RAW}` : "") +
+      (WINDOW_S ? ` window=${WINDOW_S}s` : "");
 
     while (true) {
       try {
-        elStatus.textContent = "Refreshing…";
         const txt = await fetchCSVFresh(CSV_URL);
         const rows = parseCSV(txt);
-        const counts = aggregate(rows);
-        renderCounts(counts);
-        elStatus.textContent = "Live";
+        const { counts, totalIncluded, totalAll } = aggregate(rows);
+        renderCounts(counts, totalIncluded, totalAll);
       } catch (e) {
         elStatus.textContent = "Error: " + e.message;
       }
