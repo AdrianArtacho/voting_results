@@ -1,7 +1,7 @@
 # SHOWING — Live Voting Visualization
 
-This repository contains a **static, full-screen visualization** for live audience voting.
-It is designed to work together with **SHOWING** (the smartphone interface) and a **public Google Spreadsheet published as CSV**.
+This repository contains a [**static, full-screen visualization**](https://adrianartacho.github.io/voting_results/?csv=https%3A%2F%2Fdocs.google.com%2Fspreadsheets%2Fd%2Fe%2F2PACX-1vSBD_mWx8T3o6UOExotQqhTwqiWMNheuMJTbpALEykr-Rs4H4NAzAvX-3M_qBTY9ymw4YS_SjKvDXxn%2Fpub%3Fgid%3D1948253060%26single%3Dtrue%26output%3Dcsv&open=now&window=10&refresh=2&title=CAP%20Voting) for live audience voting.
+It is designed to work together with [**SHOWING**](https://github.com/AdrianArtacho/SHOWING?tab=readme-ov-file#showing) (the smartphone interface) and a [**public Google Spreadsheet published as CSV**](https://docs.google.com/spreadsheets/d/1TrI3nvk_g4Bp6fpA5pEsfs-aozttzLySrd-5YcjnOW4/edit?gid=98746072#gid=98746072).
 
 The visualization runs entirely on **GitHub Pages**:
 
