@@ -5,7 +5,6 @@
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
   <title>SHOWING – Votes</title>
   <meta name="theme-color" content="#000000" />
-
   <style>
     :root { color-scheme: dark; }
     html, body { height: 100%; margin: 0; background:#000; color:#fff; font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
@@ -21,7 +20,6 @@
       align-items: center;
       gap: 12px;
     }
-
     .label { font-size: 18px; opacity: .95; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .pct { font-variant-numeric: tabular-nums; text-align: right; opacity: .9; }
 
@@ -37,7 +35,7 @@
       width: 0%;
       background: rgba(255,255,255,0.85);
       border-radius: 999px;
-      transition: width 600ms ease;
+      transition: width 650ms ease;
     }
     .barText {
       position: absolute; inset: 0;
@@ -54,10 +52,48 @@
     }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
     .hidden { display:none !important; }
+
+    /* Countdown overlay */
+    .overlay {
+      position: fixed;
+      left: 50%;
+      transform: translateX(-50%);
+      top: calc(14px + env(safe-area-inset-top));
+      padding: 10px 14px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.10);
+      border: 1px solid rgba(255,255,255,0.16);
+      backdrop-filter: blur(10px);
+      font-size: 14px;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 250ms ease, transform 250ms ease;
+      white-space: nowrap;
+    }
+    .overlay.show {
+      opacity: 1;
+      transform: translateX(-50%) translateY(0);
+    }
+
+    /* Freeze mode */
+    body.frozen .barFill { transition: none; opacity: 0.55; }
+    body.frozen .row { opacity: 0.75; }
+    body.frozen .overlay { opacity: 1; }
+    body.frozen #status { opacity: 0.9; }
+
+    /* Close pulse */
+    @keyframes pulse {
+      0% { transform: translateX(-50%) scale(1); }
+      50% { transform: translateX(-50%) scale(1.03); }
+      100% { transform: translateX(-50%) scale(1); }
+    }
+    .overlay.pulse { animation: pulse 900ms ease 1; }
   </style>
 </head>
 
 <body>
+  <div class="overlay" id="overlay">Voting closes in …</div>
+
   <div class="wrap">
     <div class="top">
       <div class="title" id="title">Votes</div>
@@ -84,6 +120,7 @@
   const elHint = document.getElementById("hint");
   const elTitle = document.getElementById("title");
   const elWindowInfo = document.getElementById("windowInfo");
+  const elOverlay = document.getElementById("overlay");
 
   const q = new URLSearchParams(location.search);
   const CSV_URL = q.get("csv") || "";
@@ -93,7 +130,7 @@
   const TITLE = q.get("title") || "Votes";
   elTitle.textContent = TITLE;
 
-  // Closing window params:
+  // Window:
   // open=now | open=<ISO>
   // close=<ISO>
   // window=<seconds>  (auto close = open + window)
@@ -107,7 +144,7 @@
   }
   function sleep(ms){ return new Promise(r => setTimeout(r, ms)); }
 
-  // Freeze "open=now" at first load, so the window is stable.
+  // Freeze open=now at load so window is stable.
   const OPEN_FIXED_MS = (() => {
     if (!OPEN_RAW) return null;
     if (OPEN_RAW.toLowerCase() === "now") return Date.now();
@@ -126,18 +163,18 @@
     return null;
   })();
 
-  function inWindow(tsMs) {
-    if (!Number.isFinite(tsMs)) return false;
-    if (OPEN_FIXED_MS !== null && tsMs < OPEN_FIXED_MS) return false;
-    if (CLOSE_FIXED_MS !== null && tsMs > CLOSE_FIXED_MS) return false;
-    return true;
-  }
-
   function windowLabel() {
     if (OPEN_FIXED_MS === null && CLOSE_FIXED_MS === null) return "";
     const o = OPEN_FIXED_MS !== null ? new Date(OPEN_FIXED_MS).toLocaleTimeString() : "—";
     const c = CLOSE_FIXED_MS !== null ? new Date(CLOSE_FIXED_MS).toLocaleTimeString() : "—";
     return ` · window ${o}–${c}`;
+  }
+
+  function inWindow(tsMs) {
+    if (!Number.isFinite(tsMs)) return false;
+    if (OPEN_FIXED_MS !== null && tsMs < OPEN_FIXED_MS) return false;
+    if (CLOSE_FIXED_MS !== null && tsMs > CLOSE_FIXED_MS) return false;
+    return true;
   }
 
   // CSV parser (quotes)
@@ -229,7 +266,6 @@
     elUpdated.textContent = nowHMS();
     elWindowInfo.textContent = windowLabel();
 
-    // Update
     for (const [opt, c] of entries) {
       const r = ensureRow(opt);
       const pct = totalIncluded > 0 ? (100 * c / totalIncluded) : 0;
@@ -238,13 +274,11 @@
       r.barText.textContent = `${c}`;
     }
 
-    // Hide missing
     const currentKeys = new Set(entries.map(([k]) => k));
     for (const [k, r] of rowsByKey.entries()) {
       r.root.classList.toggle("hidden", !currentKeys.has(k));
     }
 
-    // Reorder only if changed
     const newOrder = entries.map(([k]) => k);
     const changed = newOrder.length !== lastOrder.length || newOrder.some((k,i) => k !== lastOrder[i]);
     if (changed) {
@@ -255,7 +289,6 @@
       lastOrder = newOrder;
     }
 
-    // Status text
     if (OPEN_FIXED_MS !== null || CLOSE_FIXED_MS !== null) {
       elStatus.textContent = `Counting ${totalIncluded}/${totalAll} votes in window`;
     } else {
@@ -267,8 +300,12 @@
     const optIdx = COL - 1;
     const tsIdx = TSCOL - 1;
 
-    // Optional header skip if first row looks like labels
-    const looksHeader = rows.length && /option|vote|label/i.test((rows[0][optIdx] || "")) && /ts|time|iso/i.test((rows[0][tsIdx] || ""));
+    // header skip if it looks like "Option" and "tsClientIso"
+    const looksHeader =
+      rows.length &&
+      /option|vote|label/i.test((rows[0][optIdx] || "")) &&
+      /ts|time|iso/i.test((rows[0][tsIdx] || ""));
+
     const dataRows = looksHeader ? rows.slice(1) : rows;
 
     const counts = new Map();
@@ -294,6 +331,56 @@
     return { counts, totalIncluded, totalAll };
   }
 
+  // Countdown + freeze
+  let frozen = false;
+  let lastRenderText = "";
+
+  function setOverlay(text, show, pulse=false) {
+    elOverlay.textContent = text;
+    elOverlay.classList.toggle("show", !!show);
+    if (pulse) {
+      elOverlay.classList.remove("pulse");
+      // restart animation
+      void elOverlay.offsetWidth;
+      elOverlay.classList.add("pulse");
+    } else {
+      elOverlay.classList.remove("pulse");
+    }
+  }
+
+  function tickOverlay() {
+    if (CLOSE_FIXED_MS === null) {
+      setOverlay("", false);
+      return;
+    }
+
+    const now = Date.now();
+    const msLeft = CLOSE_FIXED_MS - now;
+
+    if (msLeft <= 0) {
+      if (!frozen) {
+        frozen = true;
+        document.body.classList.add("frozen");
+        setOverlay("Voting closed", true, true);
+      } else {
+        setOverlay("Voting closed", true);
+      }
+      return;
+    }
+
+    // Not closed yet
+    const sLeft = Math.ceil(msLeft / 1000);
+    // Show countdown only when window is active (or open is unspecified)
+    if (OPEN_FIXED_MS === null || now >= OPEN_FIXED_MS) {
+      setOverlay(`Voting closes in ${sLeft}s`, true);
+    } else {
+      // Before open, show a subtle “opens in …”
+      const msToOpen = OPEN_FIXED_MS - now;
+      const sToOpen = Math.ceil(msToOpen / 1000);
+      setOverlay(`Voting opens in ${sToOpen}s`, true);
+    }
+  }
+
   async function loop() {
     if (!CSV_URL) {
       elStatus.textContent = "Missing ?csv=… parameter";
@@ -306,12 +393,24 @@
       (CLOSE_RAW ? ` close=${CLOSE_RAW}` : "") +
       (WINDOW_S ? ` window=${WINDOW_S}s` : "");
 
+    elWindowInfo.textContent = windowLabel();
+
+    // Overlay timer runs independently for smooth countdown
+    setInterval(tickOverlay, 250);
+    tickOverlay();
+
     while (true) {
       try {
-        const txt = await fetchCSVFresh(CSV_URL);
-        const rows = parseCSV(txt);
-        const { counts, totalIncluded, totalAll } = aggregate(rows);
-        renderCounts(counts, totalIncluded, totalAll);
+        if (!frozen) {
+          const txt = await fetchCSVFresh(CSV_URL);
+          const rows = parseCSV(txt);
+          const { counts, totalIncluded, totalAll } = aggregate(rows);
+          renderCounts(counts, totalIncluded, totalAll);
+        } else {
+          // frozen: keep updating the clock display only
+          elUpdated.textContent = nowHMS();
+          elStatus.textContent = "Frozen (window closed)";
+        }
       } catch (e) {
         elStatus.textContent = "Error: " + e.message;
       }
