@@ -1,0 +1,264 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>SHOWING – Votes</title>
+  <meta name="theme-color" content="#000000" />
+
+  <style>
+    :root { color-scheme: dark; }
+    html, body { height: 100%; margin: 0; background:#000; color:#fff; font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
+    .wrap { position: fixed; inset: 0; display: flex; flex-direction: column; padding: 20px; box-sizing: border-box; gap: 14px; }
+    .top { display:flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+    .title { font-size: 22px; font-weight: 650; letter-spacing: 0.2px; }
+    .meta { opacity: .75; font-size: 13px; white-space: nowrap; }
+    .board { flex: 1; display:flex; flex-direction: column; justify-content: center; gap: 14px; }
+
+    .row {
+      display: grid;
+      grid-template-columns: minmax(120px, 240px) 1fr minmax(70px, 90px);
+      align-items: center;
+      gap: 12px;
+    }
+
+    .label { font-size: 18px; opacity: .95; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .pct { font-variant-numeric: tabular-nums; text-align: right; opacity: .9; }
+
+    .barTrack {
+      position: relative;
+      height: 22px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.10);
+      overflow: hidden;
+    }
+    .barFill {
+      position: absolute; inset: 0 auto 0 0;
+      width: 0%;
+      background: rgba(255,255,255,0.85);
+      border-radius: 999px;
+      transition: width 600ms ease; /* smooth change */
+    }
+    .barText {
+      position: absolute; inset: 0;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 12px; letter-spacing: .2px;
+      color: rgba(0,0,0,0.75);
+      mix-blend-mode: screen;
+      pointer-events: none;
+    }
+
+    .footer {
+      display:flex; justify-content: space-between; align-items: center;
+      opacity: .7; font-size: 12px; gap: 10px;
+    }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+    .hidden { display:none !important; }
+  </style>
+</head>
+
+<body>
+  <div class="wrap">
+    <div class="top">
+      <div class="title" id="title">Votes</div>
+      <div class="meta"><span id="total">0</span> votes · <span id="updated">--:--:--</span></div>
+    </div>
+
+    <div class="board" id="board"></div>
+
+    <div class="footer">
+      <div id="status">Loading…</div>
+      <div class="mono" id="csvHint"></div>
+    </div>
+  </div>
+
+<script>
+(() => {
+  const elBoard = document.getElementById("board");
+  const elTotal = document.getElementById("total");
+  const elUpdated = document.getElementById("updated");
+  const elStatus = document.getElementById("status");
+  const elCsvHint = document.getElementById("csvHint");
+  const elTitle = document.getElementById("title");
+
+  const q = new URLSearchParams(location.search);
+  const CSV_URL = q.get("csv") || "";
+  const COL = Math.max(1, parseInt(q.get("col") || "1", 10)); // 1-based
+  const REFRESH_S = Math.max(0.5, parseFloat(q.get("refresh") || "2"));
+  const TITLE = q.get("title") || "Votes";
+  elTitle.textContent = TITLE;
+
+  function nowHMS() {
+    const d = new Date();
+    return d.toLocaleTimeString([], {hour:"2-digit", minute:"2-digit", second:"2-digit"});
+  }
+
+  function sleep(ms){ return new Promise(r => setTimeout(r, ms)); }
+
+  // minimal CSV parser (handles quotes)
+  function parseCSV(text) {
+    const rows = [];
+    let row = [];
+    let cell = "";
+    let inQuotes = false;
+
+    for (let i=0; i<text.length; i++) {
+      const c = text[i];
+      const n = text[i+1];
+
+      if (c === '"' && inQuotes && n === '"') { cell += '"'; i++; continue; }
+      if (c === '"') { inQuotes = !inQuotes; continue; }
+
+      if (!inQuotes && (c === "," || c === "\n" || c === "\r")) {
+        if (c === "\r" && n === "\n") i++;
+        row.push(cell.trim());
+        cell = "";
+        if (c !== ",") {
+          rows.push(row);
+          row = [];
+        }
+        continue;
+      }
+
+      cell += c;
+    }
+    row.push(cell.trim());
+    rows.push(row);
+    return rows.filter(r => r.some(v => v !== ""));
+  }
+
+  async function fetchCSVFresh(url) {
+    const u = new URL(url);
+    u.searchParams.set("cb", (crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`));
+    const res = await fetch(u.toString(), {
+      cache: "no-store",
+      headers: { "Cache-Control": "no-cache", "Pragma": "no-cache" }
+    });
+    if (!res.ok) throw new Error(`Fetch failed: ${res.status} ${res.statusText}`);
+    return await res.text();
+  }
+
+  // Keep DOM nodes for smooth animation (update widths rather than re-create)
+  const rowsByKey = new Map(); // option -> {root, fill, pct, label, countText}
+  let lastOrder = [];
+
+  function ensureRow(option) {
+    if (rowsByKey.has(option)) return rowsByKey.get(option);
+
+    const root = document.createElement("div");
+    root.className = "row";
+
+    const label = document.createElement("div");
+    label.className = "label";
+    label.textContent = option;
+
+    const track = document.createElement("div");
+    track.className = "barTrack";
+
+    const fill = document.createElement("div");
+    fill.className = "barFill";
+
+    const barText = document.createElement("div");
+    barText.className = "barText";
+    barText.textContent = "";
+
+    track.appendChild(fill);
+    track.appendChild(barText);
+
+    const pct = document.createElement("div");
+    pct.className = "pct";
+    pct.textContent = "0%";
+
+    root.appendChild(label);
+    root.appendChild(track);
+    root.appendChild(pct);
+
+    elBoard.appendChild(root);
+
+    const obj = { root, label, track, fill, barText, pct };
+    rowsByKey.set(option, obj);
+    return obj;
+  }
+
+  function renderCounts(counts) {
+    const entries = Array.from(counts.entries());
+    entries.sort((a,b) => b[1] - a[1] || String(a[0]).localeCompare(String(b[0])));
+
+    const total = entries.reduce((s, [,c]) => s + c, 0);
+    elTotal.textContent = String(total);
+    elUpdated.textContent = nowHMS();
+
+    // Ensure rows exist + update values
+    for (const [opt, c] of entries) {
+      const r = ensureRow(opt);
+      const pct = total > 0 ? (100 * c / total) : 0;
+      r.pct.textContent = `${pct.toFixed(pct < 10 ? 1 : 0)}%`;
+      r.fill.style.width = `${pct}%`;
+      r.barText.textContent = `${c}`;
+    }
+
+    // Hide rows that disappeared
+    const currentKeys = new Set(entries.map(([k]) => k));
+    for (const [k, r] of rowsByKey.entries()) {
+      if (!currentKeys.has(k)) {
+        r.root.classList.add("hidden");
+      } else {
+        r.root.classList.remove("hidden");
+      }
+    }
+
+    // Reorder DOM only if order changed (keeps animations stable)
+    const newOrder = entries.map(([k]) => k);
+    const changed = newOrder.length !== lastOrder.length || newOrder.some((k,i) => k !== lastOrder[i]);
+    if (changed) {
+      const frag = document.createDocumentFragment();
+      for (const k of newOrder) frag.appendChild(rowsByKey.get(k).root);
+      elBoard.innerHTML = "";
+      elBoard.appendChild(frag);
+      lastOrder = newOrder;
+    }
+  }
+
+  function aggregate(rows) {
+    // Uses column COL (1-based) for option labels.
+    // Assumes there may be a header row; we’ll skip it if it looks like one.
+    const colIdx = COL - 1;
+    const values = rows.map(r => (r[colIdx] || "").trim()).filter(Boolean);
+
+    // If the first value looks like a header label, drop it.
+    // (You can remove this if your published CSV has no headers.)
+    const headerish = values[0] && /option|vote|label/i.test(values[0]);
+    const vals = headerish ? values.slice(1) : values;
+
+    const m = new Map();
+    for (const v of vals) m.set(v, (m.get(v) || 0) + 1);
+    return m;
+  }
+
+  async function loop() {
+    if (!CSV_URL) {
+      elStatus.textContent = "Missing ?csv=… parameter";
+      return;
+    }
+    elCsvHint.textContent = "csv: " + CSV_URL;
+
+    while (true) {
+      try {
+        elStatus.textContent = "Refreshing…";
+        const txt = await fetchCSVFresh(CSV_URL);
+        const rows = parseCSV(txt);
+        const counts = aggregate(rows);
+        renderCounts(counts);
+        elStatus.textContent = "Live";
+      } catch (e) {
+        elStatus.textContent = "Error: " + e.message;
+      }
+      await sleep(REFRESH_S * 1000);
+    }
+  }
+
+  loop();
+})();
+</script>
+</body>
+</html>
