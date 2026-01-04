@@ -181,6 +181,70 @@ When the voting window closes:
 
 This makes the end of voting **clearly legible on stage**, without abrupt jumps.
 
+Perfect — here is a **clean section you can paste directly into the README**, extending the existing documentation. It’s written to match the tone and structure of what you already have.
+
+---
+
+### Timeline density plot
+
+The visualization includes a **timeline density plot** that shows how many votes occur over time within the active voting window.
+
+* The plot aggregates votes into time bins (default: **1 second per bin**).
+* Each bin represents the number of votes cast during that interval.
+* The plot updates smoothly while voting is open and freezes when the window closes.
+* The bin size can be adjusted via the URL parameter:
+
+```
+&bin=0.5
+```
+
+This would display vote density in half-second bins. The timeline is useful for understanding **temporal dynamics** of participation (bursts, hesitation, acceleration).
+
+---
+
+### Leading option highlight
+
+At any moment during voting, the option with the highest number of counted votes is automatically marked as **LEADING**.
+
+* The leading option is visually highlighted with a subtle glow and label.
+* The highlight updates dynamically while voting is open.
+* When voting closes, the highlight freezes together with the rest of the visualization.
+
+In case of a tie, the leading option is determined deterministically (alphabetical order), ensuring visual stability.
+
+---
+
+### Export counted votes only
+
+When a voting window is defined, the visualization can export a CSV containing **only the votes that were counted inside the window**.
+
+To enable export, add:
+
+```
+&export=1
+```
+
+After the voting window closes:
+
+* an **Export counted votes** button appears
+* clicking it downloads a CSV with the following columns:
+
+```csv
+Option,tsClientIso
+```
+
+The exported file includes:
+
+* only votes whose timestamps fall inside the open/close window
+* original timestamps (no modification or aggregation)
+
+This makes it easy to:
+
+* re-analyze voting results later
+* import them into other software
+* replay or reinterpret the same vote with different temporal assumptions
+
+
 ---
 
 ## Typical live setup
