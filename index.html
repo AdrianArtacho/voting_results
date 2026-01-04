@@ -5,22 +5,64 @@
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
   <title>SHOWING – Votes</title>
   <meta name="theme-color" content="#000000" />
+
   <style>
     :root { color-scheme: dark; }
     html, body { height: 100%; margin: 0; background:#000; color:#fff; font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
     .wrap { position: fixed; inset: 0; display: flex; flex-direction: column; padding: 20px; box-sizing: border-box; gap: 14px; }
+
     .top { display:flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
     .title { font-size: 22px; font-weight: 650; letter-spacing: 0.2px; }
     .meta { opacity: .75; font-size: 13px; white-space: nowrap; }
+
+    /* Timeline panel */
+    .timelinePanel {
+      border-radius: 16px;
+      border: 1px solid rgba(255,255,255,0.10);
+      background: rgba(255,255,255,0.06);
+      padding: 10px 12px;
+      backdrop-filter: blur(6px);
+    }
+    .timelineHeader {
+      display:flex; justify-content: space-between; align-items: center;
+      gap: 10px; flex-wrap: wrap;
+      margin-bottom: 8px;
+      opacity: 0.85;
+      font-size: 12px;
+    }
+    #timelineCanvas {
+      width: 100%;
+      height: 120px;
+      display:block;
+      border-radius: 12px;
+      background: rgba(0,0,0,0.25);
+    }
+
     .board { flex: 1; display:flex; flex-direction: column; justify-content: center; gap: 14px; }
 
     .row {
       display: grid;
-      grid-template-columns: minmax(120px, 240px) 1fr minmax(70px, 90px);
+      grid-template-columns: minmax(120px, 240px) 1fr minmax(86px, 110px);
       align-items: center;
       gap: 12px;
+      padding: 6px 0;
+      border-radius: 14px;
     }
+
+    .labelWrap { display:flex; align-items: center; gap: 10px; min-width: 0; }
     .label { font-size: 18px; opacity: .95; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .badge {
+      font-size: 11px;
+      padding: 4px 8px;
+      border-radius: 999px;
+      border: 1px solid rgba(255,255,255,0.18);
+      background: rgba(255,255,255,0.08);
+      opacity: 0.85;
+      white-space: nowrap;
+      display:none;
+    }
+    .row.leading .badge { display:inline-block; }
+
     .pct { font-variant-numeric: tabular-nums; text-align: right; opacity: .9; }
 
     .barTrack {
@@ -46,6 +88,14 @@
       pointer-events: none;
     }
 
+    /* Leading highlight */
+    .row.leading {
+      background: rgba(255,255,255,0.06);
+      outline: 1px solid rgba(255,255,255,0.18);
+      box-shadow: 0 0 0 1px rgba(255,255,255,0.05), 0 0 22px rgba(255,255,255,0.10);
+    }
+    .row.leading .barFill { opacity: 0.95; }
+
     .footer {
       display:flex; justify-content: space-between; align-items: center;
       opacity: .7; font-size: 12px; gap: 10px; flex-wrap: wrap;
@@ -70,16 +120,28 @@
       transition: opacity 250ms ease, transform 250ms ease;
       white-space: nowrap;
     }
-    .overlay.show {
-      opacity: 1;
-      transform: translateX(-50%) translateY(0);
-    }
+    .overlay.show { opacity: 1; }
 
     /* Freeze mode */
     body.frozen .barFill { transition: none; opacity: 0.55; }
-    body.frozen .row { opacity: 0.75; }
+    body.frozen .row { opacity: 0.78; }
     body.frozen .overlay { opacity: 1; }
     body.frozen #status { opacity: 0.9; }
+    body.frozen #exportBtn { opacity: 1; }
+    body.frozen #timelineHeaderRight { opacity: 0.95; }
+
+    /* Export button */
+    #exportBtn {
+      font-size: 12px;
+      padding: 8px 10px;
+      border-radius: 12px;
+      border: 1px solid rgba(255,255,255,0.18);
+      background: rgba(255,255,255,0.08);
+      color: #fff;
+      cursor: pointer;
+      opacity: 0.9;
+    }
+    #exportBtn:active { transform: translateY(1px); }
 
     /* Close pulse */
     @keyframes pulse {
@@ -103,11 +165,22 @@
       </div>
     </div>
 
+    <div class="timelinePanel">
+      <div class="timelineHeader">
+        <div id="timelineHeaderLeft">Vote density</div>
+        <div id="timelineHeaderRight" class="mono"></div>
+      </div>
+      <canvas id="timelineCanvas"></canvas>
+    </div>
+
     <div class="board" id="board"></div>
 
     <div class="footer">
       <div id="status">Loading…</div>
-      <div class="mono" id="hint"></div>
+      <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+        <button id="exportBtn" class="hidden" title="Download a CSV containing only the votes counted inside the window">Export counted votes</button>
+        <div class="mono" id="hint"></div>
+      </div>
     </div>
   </div>
 
@@ -121,6 +194,11 @@
   const elTitle = document.getElementById("title");
   const elWindowInfo = document.getElementById("windowInfo");
   const elOverlay = document.getElementById("overlay");
+  const elExport = document.getElementById("exportBtn");
+  const elTimelineRight = document.getElementById("timelineHeaderRight");
+
+  const canvas = document.getElementById("timelineCanvas");
+  const ctx = canvas.getContext("2d");
 
   const q = new URLSearchParams(location.search);
   const CSV_URL = q.get("csv") || "";
@@ -128,9 +206,11 @@
   const TSCOL = Math.max(1, parseInt(q.get("tscol") || "2", 10));   // timestamp column (1-based)
   const REFRESH_S = Math.max(0.5, parseFloat(q.get("refresh") || "2"));
   const TITLE = q.get("title") || "Votes";
+  const EXPORT = (q.get("export") || "").toLowerCase();
+  const BIN_S = q.get("bin") ? Math.max(0.25, parseFloat(q.get("bin"))) : 1; // density bin size (seconds)
   elTitle.textContent = TITLE;
 
-  // Window:
+  // Window params:
   // open=now | open=<ISO>
   // close=<ISO>
   // window=<seconds>  (auto close = open + window)
@@ -226,9 +306,19 @@
     const root = document.createElement("div");
     root.className = "row";
 
+    const labelWrap = document.createElement("div");
+    labelWrap.className = "labelWrap";
+
     const label = document.createElement("div");
     label.className = "label";
     label.textContent = option;
+
+    const badge = document.createElement("div");
+    badge.className = "badge";
+    badge.textContent = "LEADING";
+
+    labelWrap.appendChild(label);
+    labelWrap.appendChild(badge);
 
     const track = document.createElement("div");
     track.className = "barTrack";
@@ -247,16 +337,22 @@
     pct.className = "pct";
     pct.textContent = "0%";
 
-    root.appendChild(label);
+    root.appendChild(labelWrap);
     root.appendChild(track);
     root.appendChild(pct);
 
     elBoard.appendChild(root);
 
-    const obj = { root, label, fill, barText, pct };
+    const obj = { root, label, badge, fill, barText, pct };
     rowsByKey.set(option, obj);
     return obj;
   }
+
+  // State for export + timeline
+  let frozen = false;
+  let lastCountedEvents = []; // [{option, tsIso, tsMs}]
+  let lastTotalAll = 0;
+  let lastLeader = null;
 
   function renderCounts(counts, totalIncluded, totalAll) {
     const entries = Array.from(counts.entries())
@@ -266,19 +362,30 @@
     elUpdated.textContent = nowHMS();
     elWindowInfo.textContent = windowLabel();
 
+    // Leader
+    const leader = entries.length ? entries[0][0] : null;
+    if (leader !== lastLeader) {
+      lastLeader = leader;
+    }
+
+    // Update
     for (const [opt, c] of entries) {
       const r = ensureRow(opt);
       const pct = totalIncluded > 0 ? (100 * c / totalIncluded) : 0;
       r.pct.textContent = `${pct.toFixed(pct < 10 ? 1 : 0)}%`;
       r.fill.style.width = `${pct}%`;
       r.barText.textContent = `${c}`;
+      r.root.classList.toggle("leading", opt === leader);
     }
 
+    // Hide missing
     const currentKeys = new Set(entries.map(([k]) => k));
     for (const [k, r] of rowsByKey.entries()) {
       r.root.classList.toggle("hidden", !currentKeys.has(k));
+      if (currentKeys.has(k)) r.root.classList.toggle("leading", k === leader);
     }
 
+    // Reorder only if changed (keeps animation nice)
     const newOrder = entries.map(([k]) => k);
     const changed = newOrder.length !== lastOrder.length || newOrder.some((k,i) => k !== lastOrder[i]);
     if (changed) {
@@ -289,6 +396,9 @@
       lastOrder = newOrder;
     }
 
+    lastTotalAll = totalAll;
+
+    // Status
     if (OPEN_FIXED_MS !== null || CLOSE_FIXED_MS !== null) {
       elStatus.textContent = `Counting ${totalIncluded}/${totalAll} votes in window`;
     } else {
@@ -296,7 +406,7 @@
     }
   }
 
-  function aggregate(rows) {
+  function aggregateAndCollect(rows) {
     const optIdx = COL - 1;
     const tsIdx = TSCOL - 1;
 
@@ -312,35 +422,157 @@
     let totalAll = 0;
     let totalIncluded = 0;
 
+    const countedEvents = [];
+
     for (const r of dataRows) {
       const opt = (r[optIdx] || "").trim();
-      const ts = (r[tsIdx] || "").trim();
-      if (!opt || !ts) continue;
+      const tsIso = (r[tsIdx] || "").trim();
+      if (!opt || !tsIso) continue;
 
       totalAll++;
 
-      const tsMs = Date.parse(ts);
+      const tsMs = Date.parse(tsIso);
       if (!Number.isFinite(tsMs)) continue;
 
       if (!inWindow(tsMs)) continue;
 
       totalIncluded++;
       counts.set(opt, (counts.get(opt) || 0) + 1);
+      countedEvents.push({ option: opt, tsIso, tsMs });
     }
 
-    return { counts, totalIncluded, totalAll };
+    // sort events by time (useful for export + timeline)
+    countedEvents.sort((a,b) => a.tsMs - b.tsMs);
+
+    return { counts, totalIncluded, totalAll, countedEvents };
+  }
+
+  // Timeline density plot (votes per BIN_S)
+  function resizeCanvasToDisplaySize() {
+    const rect = canvas.getBoundingClientRect();
+    const dpr = Math.max(1, window.devicePixelRatio || 1);
+    const w = Math.floor(rect.width * dpr);
+    const h = Math.floor(rect.height * dpr);
+    if (canvas.width !== w || canvas.height !== h) {
+      canvas.width = w;
+      canvas.height = h;
+    }
+    return { w, h, dpr };
+  }
+
+  function drawTimeline(events) {
+    const { w, h } = resizeCanvasToDisplaySize();
+    ctx.clearRect(0, 0, w, h);
+
+    // background
+    ctx.fillStyle = "rgba(255,255,255,0.06)";
+    ctx.fillRect(0, 0, w, h);
+
+    if (!events || events.length === 0) {
+      // empty state
+      ctx.fillStyle = "rgba(255,255,255,0.55)";
+      ctx.font = `${Math.floor(h*0.18)}px system-ui`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText("no votes in window", w/2, h/2);
+      elTimelineRight.textContent = "";
+      return;
+    }
+
+    // Determine time span for plotting:
+    // Prefer window bounds if defined, otherwise use events range.
+    const startMs = (OPEN_FIXED_MS !== null) ? OPEN_FIXED_MS : events[0].tsMs;
+    const endMs = (CLOSE_FIXED_MS !== null) ? CLOSE_FIXED_MS : events[events.length - 1].tsMs;
+    const spanMs = Math.max(1, endMs - startMs);
+
+    // bins
+    const binMs = BIN_S * 1000;
+    const binCount = Math.max(1, Math.ceil(spanMs / binMs));
+    const bins = new Array(binCount).fill(0);
+
+    for (const e of events) {
+      const i = Math.floor((e.tsMs - startMs) / binMs);
+      if (i >= 0 && i < bins.length) bins[i]++;
+    }
+
+    const maxVal = Math.max(...bins, 1);
+
+    // axes padding
+    const padL = Math.floor(w * 0.04);
+    const padR = Math.floor(w * 0.02);
+    const padT = Math.floor(h * 0.12);
+    const padB = Math.floor(h * 0.18);
+
+    const plotW = w - padL - padR;
+    const plotH = h - padT - padB;
+
+    // subtle grid line at half
+    ctx.strokeStyle = "rgba(255,255,255,0.10)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(padL, padT + plotH/2);
+    ctx.lineTo(padL + plotW, padT + plotH/2);
+    ctx.stroke();
+
+    // draw area/line
+    ctx.strokeStyle = "rgba(255,255,255,0.85)";
+    ctx.lineWidth = 2;
+
+    ctx.fillStyle = "rgba(255,255,255,0.22)";
+
+    const xFor = (i) => padL + (i / Math.max(1, bins.length - 1)) * plotW;
+    const yFor = (v) => padT + plotH - (v / maxVal) * plotH;
+
+    ctx.beginPath();
+    ctx.moveTo(xFor(0), yFor(bins[0]));
+    for (let i=1; i<bins.length; i++) ctx.lineTo(xFor(i), yFor(bins[i]));
+    ctx.stroke();
+
+    // area fill
+    ctx.beginPath();
+    ctx.moveTo(xFor(0), padT + plotH);
+    for (let i=0; i<bins.length; i++) ctx.lineTo(xFor(i), yFor(bins[i]));
+    ctx.lineTo(xFor(bins.length-1), padT + plotH);
+    ctx.closePath();
+    ctx.fill();
+
+    // label right: total + peak
+    const peak = maxVal;
+    elTimelineRight.textContent = `bin=${BIN_S}s · peak=${peak}/bin · n=${events.length}`;
+  }
+
+  // Export counted votes only
+  function downloadCSV(events) {
+    const header = "Option,tsClientIso\n";
+    const lines = events.map(e => `${csvEscape(e.option)},${csvEscape(e.tsIso)}`).join("\n");
+    const blob = new Blob([header + lines + "\n"], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+
+    const a = document.createElement("a");
+    a.href = url;
+
+    const o = OPEN_FIXED_MS !== null ? new Date(OPEN_FIXED_MS).toISOString().replaceAll(":", "-") : "open";
+    const c = CLOSE_FIXED_MS !== null ? new Date(CLOSE_FIXED_MS).toISOString().replaceAll(":", "-") : "close";
+    a.download = `counted_votes_${o}_to_${c}.csv`;
+
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1500);
+  }
+
+  function csvEscape(s) {
+    const t = String(s ?? "");
+    if (/[,"\n\r]/.test(t)) return `"${t.replaceAll('"','""')}"`;
+    return t;
   }
 
   // Countdown + freeze
-  let frozen = false;
-  let lastRenderText = "";
-
   function setOverlay(text, show, pulse=false) {
     elOverlay.textContent = text;
     elOverlay.classList.toggle("show", !!show);
     if (pulse) {
       elOverlay.classList.remove("pulse");
-      // restart animation
       void elOverlay.offsetWidth;
       elOverlay.classList.add("pulse");
     } else {
@@ -362,21 +594,19 @@
         frozen = true;
         document.body.classList.add("frozen");
         setOverlay("Voting closed", true, true);
+        // reveal export button if enabled
+        if (EXPORT === "1" || EXPORT === "true" || EXPORT === "yes") elExport.classList.remove("hidden");
       } else {
         setOverlay("Voting closed", true);
       }
       return;
     }
 
-    // Not closed yet
     const sLeft = Math.ceil(msLeft / 1000);
-    // Show countdown only when window is active (or open is unspecified)
     if (OPEN_FIXED_MS === null || now >= OPEN_FIXED_MS) {
       setOverlay(`Voting closes in ${sLeft}s`, true);
     } else {
-      // Before open, show a subtle “opens in …”
-      const msToOpen = OPEN_FIXED_MS - now;
-      const sToOpen = Math.ceil(msToOpen / 1000);
+      const sToOpen = Math.ceil((OPEN_FIXED_MS - now) / 1000);
       setOverlay(`Voting opens in ${sToOpen}s`, true);
     }
   }
@@ -388,28 +618,43 @@
     }
 
     elHint.textContent =
-      `col=${COL} tscol=${TSCOL} refresh=${REFRESH_S}s` +
+      `col=${COL} tscol=${TSCOL} refresh=${REFRESH_S}s bin=${BIN_S}s` +
       (OPEN_RAW ? ` open=${OPEN_RAW}` : "") +
       (CLOSE_RAW ? ` close=${CLOSE_RAW}` : "") +
       (WINDOW_S ? ` window=${WINDOW_S}s` : "");
 
     elWindowInfo.textContent = windowLabel();
 
+    // export button behavior (only becomes visible on freeze, but can be clicked any time if you show it)
+    elExport.addEventListener("click", () => downloadCSV(lastCountedEvents));
+
     // Overlay timer runs independently for smooth countdown
     setInterval(tickOverlay, 250);
     tickOverlay();
+
+    // initial canvas draw
+    drawTimeline([]);
 
     while (true) {
       try {
         if (!frozen) {
           const txt = await fetchCSVFresh(CSV_URL);
           const rows = parseCSV(txt);
-          const { counts, totalIncluded, totalAll } = aggregate(rows);
+
+          const { counts, totalIncluded, totalAll, countedEvents } = aggregateAndCollect(rows);
+          lastCountedEvents = countedEvents;
+
           renderCounts(counts, totalIncluded, totalAll);
+          drawTimeline(countedEvents);
+
+          // If export is enabled, keep it hidden until freeze (more “performative”)
+          if (!(EXPORT === "1" || EXPORT === "true" || EXPORT === "yes")) {
+            elExport.classList.add("hidden");
+          }
         } else {
           // frozen: keep updating the clock display only
           elUpdated.textContent = nowHMS();
-          elStatus.textContent = "Frozen (window closed)";
+          elStatus.textContent = `Frozen (window closed) · counted=${lastCountedEvents.length}/${lastTotalAll}`;
         }
       } catch (e) {
         elStatus.textContent = "Error: " + e.message;
@@ -417,6 +662,8 @@
       await sleep(REFRESH_S * 1000);
     }
   }
+
+  window.addEventListener("resize", () => drawTimeline(lastCountedEvents));
 
   loop();
 })();
