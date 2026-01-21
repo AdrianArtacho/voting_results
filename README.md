@@ -10,6 +10,8 @@ The visualization runs entirely on **GitHub Pages**:
 * no authentication
 * just a browser, a CSV, and time
 
+![img/gui.png](img/gui.png)
+
 ---
 
 ## What it does
